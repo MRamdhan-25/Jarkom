@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simulasi Jaringan — HTML + D3 (Advanced)</title>
+  <style>
+    :root{--bg:#f6f8fc;--panel:#fff;--muted:#6b7280}
+    body{font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Arial;margin:0;display:flex;height:100vh;background:var(--bg)}
+    #controls{width:340px;padding:18px;border-right:1px solid #e6e9ef;background:linear-gradient(180deg,#fbfdff,#f3f7ff)}
+    #view{flex:1;display:flex;flex-direction:column}
+    h2{margin:0 0 6px 0;font-size:18px}
+    label{display:block;margin-top:12px;font-weight:600;color:#111827}
+    select, button, input, textarea{width:100%;padding:8px;margin-top:6px;border:1px solid #d1d5db;border-radius:6px}
+    button{background:#2563eb;color:#fff;border:none;cursor:pointer}
+    button.secondary{background:#fff;color:#111;border:1px solid #d1d5db}
+    #svgCanvas{flex:1}
+    .node .label{font-size:12px;text-anchor:middle;fill:#111}
+    .node .ip{font-size:11px;text-anchor:middle;fill:#374151}
+    .edge{stroke:#9ca3af;stroke-width:3;opacity:0.95}
+    .edge.active{stroke:#ef4444;stroke-width:5}
+    .node .device-outline{filter:drop-shadow(0 2px 4px rgba(2,6,23,0.08))}
+    #log{height:140px;overflow:auto;border-top:1px solid #e6e9ef;padding:8px;background:var(--panel);font-size:13px}
+    .small{font-size:12px;color:var(--muted)}
+    .device-edit{display:flex;gap:8px;margin-top:8px}
+    .device-edit input{flex:1}
+    .legend{display:flex;gap:8px;align-items:center;margin-top:12px}
+    .legend .dot{width:14px;height:14px;border-radius:4px}
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <h2>Simulasi Jaringan (Advanced)</h2>
+    <p class="small">Visual topologi dengan ikon perangkat, IP address tertera, dan animasi paket yang bergerak.</p>
+
+    <label for="src">Source (Pengirim)</label>
+    <select id="src"></select>
+
+    <label for="dst">Destination (Penerima)</label>
+    <select id="dst"></select>
+
+    <label for="payload">Payload (isi paket)</label>
+    <input id="payload" value="Halo dari PC!" />
+
+    <button id="sendBtn">Kirim Paket</button>
+    <button id="resetBtn" class="secondary" style="margin-top:8px">Reset Highlight</button>
+
+    <hr />
+    <h3 style="margin-bottom:6px">Perangkat & IP (bisa diedit)</h3>
+    <div id="deviceEdits"></div>
+
+    <div class="legend">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:8px;align-items:center"><div class="dot" style="background:#bfe9ff"></div><div class="small">PC</div></div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="dot" style="background:#c8f0c0"></div><div class="small">Switch</div></div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="dot" style="background:#ffd39b"></div><div class="small">Router</div></div>
+      </div>
+    </div>
+
+    <div id="log"></div>
+  </div>
+
+  <div id="view">
+    <svg id="svgCanvas"></svg>
+  </div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    // Topologi diperpanjang dengan ikon dan IP editable
+    const nodes = [
+      {id:'PC1', type:'end', ip:'10.0.1.2', x:100, y:120},
+      {id:'PC2', type:'end', ip:'10.0.1.3', x:100, y:260},
+      {id:'SW1', type:'switch', ip:'', x:300, y:190},
+      {id:'R1', type:'router', ip:'192.168.1.1', x:500, y:190},
+      {id:'SW2', type:'switch', ip:'', x:700, y:190},
+      {id:'R2', type:'router', ip:'192.168.2.1', x:900, y:190},
+      {id:'SW3', type:'switch', ip:'', x:1100, y:190},
+      {id:'PC3', type:'end', ip:'10.0.2.2', x:1300, y:120},
+      {id:'PC4', type:'end', ip:'10.0.2.3', x:1300, y:260}
+    ];
+
+    const links = [
+      {source:'PC1', target:'SW1'},
+      {source:'PC2', target:'SW1'},
+      {source:'SW1', target:'R1'},
+      {source:'R1', target:'SW2'},
+      {source:'SW2', target:'R2'},
+      {source:'R2', target:'SW3'},
+      {source:'SW3', target:'PC3'},
+      {source:'SW3', target:'PC4'}
+    ];
+
+    const svg = d3.select('#svgCanvas');
+    function resize(){
+      const w = document.getElementById('view').clientWidth;
+      const h = document.getElementById('view').clientHeight;
+      svg.attr('width',w).attr('height',h);
+    }
+    resize(); window.addEventListener('resize', resize);
+
+    // groups
+    const gLinks = svg.append('g').attr('class','links');
+    const gNodes = svg.append('g').attr('class','nodes');
+
+    // helper
+    function nodeById(id){ return nodes.find(n=>n.id===id); }
+
+    function draw(){
+      gLinks.selectAll('*').remove(); gNodes.selectAll('*').remove();
+
+      // draw links
+      gLinks.selectAll('path').data(links).enter()
+        .append('path')
+        .attr('class','edge')
+        .attr('d', d => `M ${nodeById(d.source).x} ${nodeById(d.source).y} L ${nodeById(d.target).x} ${nodeById(d.target).y}`)
+        .attr('id', d => `e-${d.source}-${d.target}`)
+        .attr('fill','none');
+
+      // draw nodes with SVG icons (PC, switch, router)
+      const n = gNodes.selectAll('g').data(nodes).enter().append('g')
+        .attr('class', d => `node ${d.type}`)
+        .attr('transform', d => `translate(${d.x},${d.y})`)
+        .attr('id', d => `n-${d.id}`);
+
+      // icon shapes
+      // PC icon
+      n.filter(d=>d.type==='end').append('g').html(() => `
+        <rect x="-28" y="-20" width="56" height="36" rx="6" class="device-outline" fill="#bfe9ff" stroke="#0f172a" stroke-width="0.8"></rect>
+        <rect x="-18" y="10" width="36" height="8" rx="2" fill="#0b1220" opacity="0.08"></rect>
+      `);
+
+      // switch icon (simple rack)
+      n.filter(d=>d.type==='switch').append('g').html(() => `
+        <rect x="-34" y="-16" width="68" height="32" rx="6" class="device-outline" fill="#c8f0c0" stroke="#0f172a" stroke-width="0.8"></rect>
+        <rect x="-26" y="-8" width="12" height="4" rx="1" fill="#0b1220" opacity="0.12"></rect>
+        <rect x="2" y="-8" width="12" height="4" rx="1" fill="#0b1220" opacity="0.12"></rect>
+      `);
+
+      // router icon (circle with small antennas)
+      n.filter(d=>d.type==='router').append('g').html(() => `
+        <circle r="26" class="device-outline" fill="#ffd39b" stroke="#0f172a" stroke-width="0.8"></circle>
+        <circle r="6" cx="0" cy="0" fill="#fff" opacity="0.12"></circle>
+      `);
+
+      // labels & IP
+      n.append('text').attr('class','label').attr('y',48).text(d=>d.id);
+      n.append('text').attr('class','ip').attr('y',62).text(d=>d.ip?d.ip:'');
+    }
+
+    draw();
+
+    // populate dropdowns
+    const pcList = nodes.filter(n=>n.type==='end').map(n=>n.id);
+    const srcSel = document.getElementById('src');
+    const dstSel = document.getElementById('dst');
+    pcList.forEach(p=>{ const o=document.createElement('option'); o.value=p; o.text=p; srcSel.add(o); const o2=o.cloneNode(true); dstSel.add(o2); });
+    srcSel.selectedIndex=0; dstSel.selectedIndex=1;
+
+    // device edit controls
+    const deviceEdits = document.getElementById('deviceEdits');
+    function renderDeviceEdits(){
+      deviceEdits.innerHTML='';
+      nodes.forEach(n=>{
+        const row = document.createElement('div'); row.className='device-edit';
+        const label = document.createElement('div'); label.style.width='90px'; label.style.fontSize='13px'; label.textContent=n.id;
+        const ipInput = document.createElement('input'); ipInput.value = n.ip || '';
+        ipInput.placeholder='(kosong jika bukan IP)';
+        ipInput.addEventListener('change', ()=>{ n.ip = ipInput.value; d3.select(`#n-${n.id}`).select('.ip').text(n.ip); });
+        row.appendChild(label); row.appendChild(ipInput); deviceEdits.appendChild(row);
+      });
+    }
+    renderDeviceEdits();
+
+    // BFS path
+    function computePath(src,dst){
+      const adj={}; nodes.forEach(n=>adj[n.id]=[]);
+      links.forEach(l=>{adj[l.source].push(l.target); adj[l.target].push(l.source)});
+      const q=[src]; const prev={}; prev[src]=null;
+      while(q.length){ const u=q.shift(); if(u===dst) break; for(const v of adj[u]){ if(!(v in prev)){ prev[v]=u; q.push(v); } } }
+      if(!(dst in prev)) return null; const path=[]; let cur=dst; while(cur){ path.unshift(cur); cur=prev[cur]; } return path;
+    }
+
+    function log(msg){ const el=document.getElementById('log'); const p=document.createElement('div'); p.textContent=msg; el.prepend(p); }
+
+    function resetHighlights(){ svg.selectAll('.edge').classed('active',false); svg.selectAll('.node').classed('active',false); const el=document.getElementById('log'); el.innerHTML=''; }
+
+    // Animated packet: move a circle along the polyline made of segments between node centers
+    async function animatePacket(path, payload){
+      if(!path || path.length<2) return;
+      resetHighlights();
+      log(`Mengirim dari ${path[0]} ke ${path[path.length-1]}: "${payload}"`);
+
+      // build full path coordinates
+      const coords = [];
+      for(let i=0;i<path.length;i++){ const n=nodeById(path[i]); coords.push([n.x,n.y]); }
+
+      // create a single path element representing polyline
+      const d = coords.map((c,i)=> (i===0?`M ${c[0]} ${c[1]}`:`L ${c[0]} ${c[1]}`)).join(' ');
+      const movingPath = gLinks.append('path').attr('d', d).attr('fill','none').attr('id','movingPath');
+      const totalLength = movingPath.node().getTotalLength();
+
+      // create packet circle
+      const pkt = gNodes.append('circle').attr('r',8).attr('fill','#ef4444').attr('class','packet');
+
+      // animate along length, while highlighting edges/nodes when passing
+      const duration = Math.max(1200, path.length * 700);
+      const steps = path.length; // we'll sample positions to highlight hops
+
+      // for highlighting at node positions, compute distances along the path to each node
+      const nodePosLengths = coords.map(c => movingPath.node().getPointAtLength(0));
+      const accum = [];
+      for(let i=0;i<coords.length;i++){
+        // find closest length where point equals coords[i]
+        // brute force: sample along totalLength
+        let best=0; let bestd=Infinity;
+        const samples = Math.max(200, Math.floor(totalLength/2));
+        for(let s=0;s<=samples;s++){
+          const L = (s/samples)*totalLength; const p = movingPath.node().getPointAtLength(L);
+          const dx = p.x - coords[i][0]; const dy = p.y - coords[i][1]; const dd = dx*dx+dy*dy;
+          if(dd<bestd){ bestd=dd; best=L; }
+        }
+        accum.push(best);
+      }
+
+      // animate using transition
+      pkt.transition()
+        .duration(duration)
+        .attrTween('transform', function(){
+          return function(t){
+            const L = t * totalLength; const p = movingPath.node().getPointAtLength(L);
+            return `translate(${p.x},${p.y})`;
+          }
+        })
+        .on('start', ()=>{})
+        .on('end', ()=>{ pkt.remove(); movingPath.remove(); log(`Paket sampai di ${path[path.length-1]} ✅`); });
+
+      // highlight nodes/edges as packet passes their accum lengths
+      for(let i=0;i<accum.length;i++){
+        const when = (accum[i]/totalLength) * duration;
+        ((i)=>{
+          setTimeout(()=>{
+            const nid = path[i]; d3.select(`#n-${nid}`).classed('active',true); log(`Hop ${i+1}: ${nid}`);
+            if(i>0){ const a=path[i-1], b=path[i]; d3.select(`#e-${a}-${b}`).classed('active',true); d3.select(`#e-${b}-${a}`).classed('active',true); }
+          }, when);
+        })(i);
+      }
+
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', ()=>{
+      const src = srcSel.value; const dst = dstSel.value; const payload = document.getElementById('payload').value;
+      if(src===dst){ alert('Source dan destination sama.'); return; }
+      const path = computePath(src,dst);
+      if(!path){ alert('Tidak ada jalur antara ' + src + ' dan ' + dst); return; }
+      animatePacket(path,payload);
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', resetHighlights);
+
+    // initial log
+    log('Ready — pilih source & destination lalu klik Kirim Paket.');
+  </script>
+</body>
+</html>
